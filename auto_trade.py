@@ -1,9 +1,11 @@
 import json
+import logging
 import os
 import pyupbit
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from pydantic import BaseModel
 from ta.utils import dropna
 
 from analytics_resource.indicators import (
@@ -14,7 +16,19 @@ from analytics_resource.news_data import get_etherium_news
 from analytics_resource.capture_chart import run_capture
 from analytics_resource.youtube_script import get_combined_transcript
 
+# Logger 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 설정 파일 Load
 load_dotenv()
+
+# Structured Output : https://platform.openai.com/docs/guides/structured-outputs
+# OpenAI Playground : https://platform.openai.com/playground/chat?models=gpt-4o
+class TradingDecision(BaseModel):
+    decision: str
+    reason: str
+
 
 def ai_trade():
     print("##### [START] AutoTrade ######")
@@ -78,12 +92,7 @@ def ai_trade():
                     - Recent news headlines and their potential impact on Ethereum price
                     - Insight from the YouTube video transcript
 
-                    Response in json format.   
-
-                    Response Example:
-                    {"decision": "BUY", "reason": "some technical reason"}
-                    {"decision": "SELL", "reason": "some technical reason"}
-                    {"decision": "HOLD", "reason": "some technical reason"}
+                    Respond with a decision (buy, sell or hold) and a reason for your decision.
             """
         },
         {
@@ -110,17 +119,36 @@ def ai_trade():
             ]
         }
     ]
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "trading_decision",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "decision": {
+                        "type": "string",
+                        "enum": ["buy", "sell", "hold"]
+                    },
+                    "reason": {
+                        "type": "string"
+                    }
+                },
+                "required": ["decision", "reason"],
+                "additionalProperties": False
+            }
+        }
+    }
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=messages,
-        max_tokens=300,
-        response_format={
-            "type": "json_object"
-        }
+        response_format=response_format,
+        max_tokens=4095
     )
-    ai_decision = response.choices[0].message.content
+    # ai_decision = response.choices[0].message.content
+    trade_decision = TradingDecision.model_validate_json(response.choices[0].message.content)
 
-    print("ai_decision : ", response)
 
     ####################################################################################################################
     # 3. AI의 판단에 따라 실제로 자동매매 진행하기
@@ -130,12 +158,12 @@ def ai_trade():
     upbit_secret_key = os.getenv('UPBIT_SECRET_KEY')
     upbit_client = pyupbit.Upbit(upbit_access_key, upbit_secret_key)
 
-    trade_decision = json.loads(ai_decision)
+    # trade_decision = json.loads(ai_decision)
 
-    print(f"> AI Decision : {trade_decision['decision'].upper()} ###")
-    print(f"> Reason : {trade_decision['reason']} ###")
+    print(f"> AI Decision : {trade_decision.decision.upper()} ###")
+    print(f"> Reason : {trade_decision.reason} ###")
 
-    if trade_decision['decision'].upper() == 'BUY':
+    if trade_decision.decision.upper() == 'BUY':
         print(f">> Buy order executed")
         my_krw = upbit_client.get_balance("KRW")
         trading_quantity = my_krw * 0.99  # 수수료를 제외한 나머지 금액으로 매수한다.
@@ -145,7 +173,7 @@ def ai_trade():
         else:
             print("[Warning] 매수 최소 금액 미충족 (원화 잔액이 5,000원 이하)")
 
-    elif trade_decision['decision'].upper() == 'SELL':
+    elif trade_decision.decision.upper() == 'SELL':
         print(f">> Sell order executed")
         my_eth = upbit_client.get_balance("ETH")
         current_price = pyupbit.get_orderbook(ticker="KRW-ETH")['orderbook_units'][0]['ask_price']  # 현재 매도 호가 조회
@@ -155,7 +183,7 @@ def ai_trade():
         else:
             print("[Warning] 매도 최소 금액 미충족 (5,000원 미만)")
 
-    elif trade_decision['decision'].upper() == 'HOLD':
+    elif trade_decision.decision.upper() == 'HOLD':
         print(f">> HOLD Position")
 
     print("##### [END] AutoTrade #####")
