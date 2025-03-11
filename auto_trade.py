@@ -27,6 +27,7 @@ load_dotenv()
 # OpenAI Playground : https://platform.openai.com/playground/chat?models=gpt-4o
 class TradingDecision(BaseModel):
     decision: str
+    percentage: int
     reason: str
 
 
@@ -76,7 +77,7 @@ def ai_trade():
 
     print(">> Get Youtube script")
     # YouTube script 가져오기
-    youtube_transcript = get_combined_transcript(video_id="TWINrTppUl4")
+    youtube_transcript = get_combined_transcript(video_id="3XbtEX3jUv4")
 
     ####################################################################################################################
     # 2. AI에게 데이터를 제공하고 판단 받기
@@ -86,13 +87,26 @@ def ai_trade():
     messages = [
         {
             "role": "system",
-            "content": """You are an expert in Cryptocurrency investing. Analyze the provided data including technical indicators and tell me whether to buy, sell, or hold at the moment. Consider the following indicators in your analysis. ranslate the reason in the message's content into Korean:
+            "content": f"""You are an expert in Cryptocurrency investing. Analyze the provided data including technical indicators and tell me whether to buy, sell, or hold at the moment. Consider the following indicators in your analysis. Translate the reason in the message's content into Korean:
                     - Technical indicators and market data
                     - The Fear and Greed index and its implications
                     - Recent news headlines and their potential impact on Ethereum price
                     - Insight from the YouTube video transcript
 
-                    Respond with a decision (buy, sell or hold) and a reason for your decision.
+                    Particularly important is to always refer to the trading method of 'Wonyyotti', a legendary Korean investor, to access the current situation and make trading decision. Wonyyotti's trading method is as follows: 
+                    {youtube_transcript}
+                    
+                    Based on this trading method, analyze the current market situation and make a judgement by synthesizing it with the provided data.
+                    
+                    Response format:
+                    1. A decision (buy, sell, or hold)
+                    2. If the decision is 'buy', provide a percentage (1-100) of available KRW to use for buying.
+                    If the decision is 'sell', provide a percentabe (1-100) of held ETH to sell.
+                    If the decision is 'hold', set the percentage to 0.
+                    3. A reason for your deicision
+                    
+                    Ensure that the percentage is an integer between 1 and 100 for buy/sell decision, and exactly 0 for hold decisions.
+                    Your percentage should reflect the strength of your conviction in the decision based on. the analyzed data.
             """
         },
         {
@@ -107,7 +121,6 @@ def ai_trade():
                         Hourly OHLCV with indicators (24 Hours): {df_hourly.to_json()}
                         Fear and Greed index: {json.dumps(fear_greed_index)}
                         Recent news headlines : {json.dumps(news_headlines)}
-                        YouTube Video Transcript: {youtube_transcript}
                     """
                 },
                 # {
@@ -131,11 +144,14 @@ def ai_trade():
                         "type": "string",
                         "enum": ["buy", "sell", "hold"]
                     },
+                    "percentage": {
+                        "type": "integer"
+                    },
                     "reason": {
                         "type": "string"
                     }
                 },
-                "required": ["decision", "reason"],
+                "required": ["decision", "percentage",  "reason"],
                 "additionalProperties": False
             }
         }
@@ -164,20 +180,22 @@ def ai_trade():
     print(f"> Reason : {trade_decision.reason} ###")
 
     if trade_decision.decision.upper() == 'BUY':
-        print(f">> Buy order executed")
         my_krw = upbit_client.get_balance("KRW")
-        trading_quantity = my_krw * 0.99  # 수수료를 제외한 나머지 금액으로 매수한다.
+        # trading_quantity = my_krw * 0.99  # 수수료를 제외한 나머지 금액으로 매수한다.
+        trading_quantity = my_krw * (trade_decision.percentage / 100) * 0.99
         if trading_quantity > 5000:  # Upbit 매수 최소 금액 5,000원 확인
-            # print(upbit_client.buy_market_order("KRW-ETH", upbit_client.get_balance("KRW") * 0.99))
+            print(f">> Buy order executed : {trade_decision.percentage}% of available KRW")
+            # print(upbit_client.buy_market_order("KRW-ETH", trading_quantity))
             pass
         else:
             print("[Warning] 매수 최소 금액 미충족 (원화 잔액이 5,000원 이하)")
 
     elif trade_decision.decision.upper() == 'SELL':
-        print(f">> Sell order executed")
         my_eth = upbit_client.get_balance("ETH")
+        trading_quantity = my_eth * (trade_decision.percentage / 100)
         current_price = pyupbit.get_orderbook(ticker="KRW-ETH")['orderbook_units'][0]['ask_price']  # 현재 매도 호가 조회
-        if my_eth * current_price > 5000:
+        if trading_quantity * current_price > 5000:
+            print(f">> Sell order executed : {trade_decision.percentage}% of held ETH")
             # print(upbit_client.sell_market_order("KRW-ETH", upbit_client.get_balance("KRW-ETH")))
             pass
         else:
