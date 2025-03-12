@@ -237,5 +237,14 @@ def ai_trade():
 
     print("##### [END] AutoTrade #####")
 
+def run_trading():
+    while True:
+        try:
+            ai_trade()
+            time.sleep(600) # 10분마다 실행
+        except Exception as ex:
+            logger.error(f"Auto trading error : {ex}")
+            time.sleep(300) # 오류 발생 시 5분 후 재시도
+
 if __name__ == "__main__":
-    ai_trade()
+    run_trading()
