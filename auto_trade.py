@@ -2,7 +2,9 @@ import json
 import logging
 import os
 import pyupbit
+import time
 
+from datetime import datetime
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
@@ -15,6 +17,7 @@ from analytics_resource.indicators import (
 from analytics_resource.news_data import get_etherium_news
 from analytics_resource.capture_chart import run_capture
 from analytics_resource.youtube_script import get_combined_transcript
+from mongodb_connector import get_mongodb_client
 
 # Logger 설정
 logging.basicConfig(level=logging.INFO)
@@ -170,11 +173,12 @@ def ai_trade():
     # 3. AI의 판단에 따라 실제로 자동매매 진행하기
     ####################################################################################################################
     print(">> Execution trading")
+    # Setup upbit client
     upbit_access_key = os.getenv('UPBIT_ACCESS_KEY')
     upbit_secret_key = os.getenv('UPBIT_SECRET_KEY')
     upbit_client = pyupbit.Upbit(upbit_access_key, upbit_secret_key)
 
-    # trade_decision = json.loads(ai_decision)
+
 
     print(f"> AI Decision : {trade_decision.decision.upper()} ###")
     print(f"> Reason : {trade_decision.reason} ###")
@@ -203,6 +207,33 @@ def ai_trade():
 
     elif trade_decision.decision.upper() == 'HOLD':
         print(f">> HOLD Position")
+
+    # 거래 여부와 상관없이 현재 잔액 조회
+    time.sleep(1) # API 호출 제한을 고려하여 잠시 대기
+    balances = upbit_client.get_balances()
+    print("balances : ", balances)
+    eth_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'ETH'),0)
+    krw_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'KRW'), 0)
+    eth_avg_buy_price = next((float(balance['avg_buy_price']) for balance in balances if balance['currency'] == 'ETH'), 0)
+    current_eth_price = pyupbit.get_current_price('KRW-ETH')
+
+    log_trade = {
+        "timestamp": datetime.now().isoformat(),
+        "decision": trade_decision.decision.upper(),
+        "percentage": trade_decision.percentage,
+        "reason": trade_decision.reason,
+        "eth_balance": eth_balance,
+        "krw_balance": krw_balance,
+        "eth_avg_buy_price": eth_avg_buy_price,
+        "eth_krw_price": current_eth_price
+    }
+    try:
+        # Setup mongodb client
+        mongodb_client = get_mongodb_client()
+        mongodb_client.autotradedb.trading_result.insert_one(log_trade)
+        mongodb_client.close()
+    except Exception as ex:
+        print("[EX] Failed to insert log trade : ", str(ex.args))
 
     print("##### [END] AutoTrade #####")
 
