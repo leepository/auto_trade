@@ -1,10 +1,11 @@
 import json
 import logging
 import os
+import pandas as pd
 import pyupbit
 import time
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from openai import OpenAI
 from pydantic import BaseModel
@@ -33,9 +34,62 @@ class TradingDecision(BaseModel):
     percentage: int
     reason: str
 
+def get_recent_trades(mongodb_client, days=7):
+    seven_days_ago = (datetime.now() - timedelta(days=days)).isoformat()
+    raws = list(mongodb_client.autotradedb.trading_result.find({'timestamp':{'$gte': seven_days_ago}}, {'_id': 0}).sort('timestamp', -1))[:20]
+    columns = ['timestamp', 'decision', 'percentage', 'reason', 'eth_balance', 'krw_balance', 'eth_avg_buy_price', 'eth_krw_price', 'reflection']
+    return pd.DataFrame.from_records(data=raws, columns=columns)
+
+def calculate_performance(trades_df):
+    if trades_df.empty:
+        return 0
+
+    initial_balance = trades_df.iloc[-1]['krw_balance'] + trades_df.iloc[-1]['eth_balance'] * trades_df.iloc[-1]['eth_krw_price']
+    final_balance = trades_df.iloc[0]['krw_balance'] + trades_df.iloc[0]['eth_balance'] * trades_df.iloc[0]['eth_krw_price']
+
+    return (final_balance - initial_balance) / initial_balance * 100 if initial_balance > 0 else 0
+
+def generate_reflection(openai_client, trades_df, current_market_data):
+    performance = calculate_performance(trades_df)
+
+    response = openai_client.chat.completions.create(
+        model="gpt-4o-2024-08-06",
+        messages = [
+            {
+                "role": "system",
+                "content": "You are an AI trading assistant tasked with analyzing recent trading performance and current market conditions to generate insights and improvements for future trading decisions. Translate the message's content into Korean"
+            },
+            {
+                "role": "user",
+                "content": f"""
+                    Recent trading data:
+                    {trades_df.to_json(orient='records')}
+                    
+                    Current market data:
+                    {current_market_data}
+                    
+                    Overall performance in the last 7 days: {performance:.2f}%
+                    
+                    Please analyze this data and provide:
+                    1. A brief reflection on the recent trading decisions
+                    2. Insights on what worked well and what didn't
+                    3. Suggestions for improvement in future trading decisions
+                    4. Any patterns or trends you notice in the market data
+                    
+                    Limit your response to 250 words or less.
+                """
+            }
+        ]
+    )
+
+    response_content = response.choices[0].message.content
+    print("reflection response : ", response_content)
+    return response_content
 
 def ai_trade():
-    print("##### [START] AutoTrade ######")
+    print(f"##### [START] AutoTrade at {datetime.now().isoformat()} ######")
+
+    mongodb_client = get_mongodb_client()
 
     upbit_access_key = os.getenv('UPBIT_ACCESS_KEY')
     upbit_secret_key = os.getenv('UPBIT_SECRET_KEY')
@@ -82,11 +136,35 @@ def ai_trade():
     # YouTube script 가져오기
     youtube_transcript = get_combined_transcript(video_id="3XbtEX3jUv4")
 
+    # 최근 거래 내역 가져오기
+    recent_trades = get_recent_trades(mongodb_client=mongodb_client)
+    print("recent_trades : ", recent_trades)
+
+    # 현재 시장 데이터 수집 (기존 코드에서 가져온 데이터 사용)
+    current_market_data = {
+        "fear_and_greed_index": fear_greed_index,
+        "news_headline": news_headlines,
+        "orderbook": order_book,
+        "daily_ohlcv": df_daily.to_dict(),
+        "hourly_ohlcv": df_hourly.to_dict()
+    }
+
+
+
     ####################################################################################################################
     # 2. AI에게 데이터를 제공하고 판단 받기
     ####################################################################################################################
     print(">> Make AI Decision")
     client = OpenAI()
+
+    print(">> Make reflection")
+    # 반성 및 개선 내용 생성
+    reflection = generate_reflection(
+        openai_client=client,
+        trades_df=recent_trades,
+        current_market_data=current_market_data
+    )
+
     messages = [
         {
             "role": "system",
@@ -95,6 +173,9 @@ def ai_trade():
                     - The Fear and Greed index and its implications
                     - Recent news headlines and their potential impact on Ethereum price
                     - Insight from the YouTube video transcript
+
+                    Recent trading reflection:
+                    {reflection}
 
                     Particularly important is to always refer to the trading method of 'Wonyyotti', a legendary Korean investor, to access the current situation and make trading decision. Wonyyotti's trading method is as follows: 
                     {youtube_transcript}
@@ -178,8 +259,6 @@ def ai_trade():
     upbit_secret_key = os.getenv('UPBIT_SECRET_KEY')
     upbit_client = pyupbit.Upbit(upbit_access_key, upbit_secret_key)
 
-
-
     print(f"> AI Decision : {trade_decision.decision.upper()} ###")
     print(f"> Reason : {trade_decision.reason} ###")
 
@@ -211,7 +290,6 @@ def ai_trade():
     # 거래 여부와 상관없이 현재 잔액 조회
     time.sleep(1) # API 호출 제한을 고려하여 잠시 대기
     balances = upbit_client.get_balances()
-    print("balances : ", balances)
     eth_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'ETH'),0)
     krw_balance = next((float(balance['balance']) for balance in balances if balance['currency'] == 'KRW'), 0)
     eth_avg_buy_price = next((float(balance['avg_buy_price']) for balance in balances if balance['currency'] == 'ETH'), 0)
@@ -225,17 +303,18 @@ def ai_trade():
         "eth_balance": eth_balance,
         "krw_balance": krw_balance,
         "eth_avg_buy_price": eth_avg_buy_price,
-        "eth_krw_price": current_eth_price
+        "eth_krw_price": current_eth_price,
+        "reflection": reflection
     }
     try:
         # Setup mongodb client
-        mongodb_client = get_mongodb_client()
         mongodb_client.autotradedb.trading_result.insert_one(log_trade)
         mongodb_client.close()
     except Exception as ex:
         print("[EX] Failed to insert log trade : ", str(ex.args))
 
     print("##### [END] AutoTrade #####")
+    print("\n\n\n")
 
 def run_trading():
     while True:
