@@ -36,7 +36,7 @@ class TradingDecision(BaseModel):
 
 def get_recent_trades(mongodb_client, days=7):
     seven_days_ago = (datetime.now() - timedelta(days=days)).isoformat()
-    raws = list(mongodb_client.autotradedb.trading_result.find({'timestamp':{'$gte': seven_days_ago}}, {'_id': 0}).sort('timestamp', -1))[:20]
+    raws = list(mongodb_client.autotradedb.trading_result.find({'timestamp':{'$gte': seven_days_ago}}, {'_id': 0}).sort('timestamp', -1))
     columns = ['timestamp', 'decision', 'percentage', 'reason', 'eth_balance', 'krw_balance', 'eth_avg_buy_price', 'eth_krw_price', 'reflection']
     return pd.DataFrame.from_records(data=raws, columns=columns)
 
@@ -51,7 +51,6 @@ def calculate_performance(trades_df):
 
 def generate_reflection(openai_client, trades_df, current_market_data):
     performance = calculate_performance(trades_df)
-
     response = openai_client.chat.completions.create(
         model="gpt-4o-2024-08-06",
         messages = [
@@ -83,7 +82,6 @@ def generate_reflection(openai_client, trades_df, current_market_data):
     )
 
     response_content = response.choices[0].message.content
-    print("reflection response : ", response_content)
     return response_content
 
 def ai_trade():
@@ -98,47 +96,50 @@ def ai_trade():
     ####################################################################################################################
     # 1. 업비트 데이터 가져오기 (30일 일봉 데이터, 24시간 ohlcv 데이터, 오더북, balance)
     ####################################################################################################################
-
-    print(">> Get Upbit data : Balance")
+    print(">> Prepare data >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+    print("> Get Upbit data : Balance")
     # Get upbit balance
     all_balances = upbit_client.get_balances()
     # filtered_balances_dict = {balance['currency']:balance for balance in all_balances if balance['currency'] in ['ETH', 'KRW']}
     filtered_balances = [balance for balance in all_balances if balance['currency'] in ['ETH', 'KRW']]
 
-    print(">> Get Upbit orderbook data")
+    print("> Get Upbit orderbook data")
     # Orderbook(현재 호가) 데이터 조회
     order_book = pyupbit.get_orderbook("KRW-ETH")
 
-    print(">> Get Upbit daily OHLCV")
+    print("> Get Upbit daily OHLCV")
     # 30일 기준 일봉 데이터 조회
     df_daily = pyupbit.get_ohlcv("KRW-ETH", interval="day", count=30)
     df_daily = dropna(df_daily)
     df_daily = add_indicators(df=df_daily)
 
-    print(">> Get Upbit 24Hours OHLCV")
+    print("> Get Upbit 24Hours OHLCV")
     # 1일 기준 시간봉 데이터 조회
     df_hourly = pyupbit.get_ohlcv("KRW-ETH", interval="minute60", count=24)
     df_hourly = dropna(df_hourly)
     df_hourly = add_indicators(df=df_hourly)
 
-    print(">> Get fear and greed index")
+    print("> Get fear and greed index")
     # 공포 탐욕 지수 가져오기
     fear_greed_index = get_fear_and_greed_index()
 
-    print(">> Get news headline")
+    print("> Get news headline")
     # 뉴스 헤드라인 가져오기
     news_headlines = get_etherium_news()
 
     # 차트 이미지 캡처 후 가져오기
     # chart_image, saved_file_path = run_capture()
 
-    print(">> Get Youtube script")
+    print("> Get Youtube script")
     # YouTube script 가져오기
-    youtube_transcript = get_combined_transcript(video_id="3XbtEX3jUv4")
+    # youtube_transcript = get_combined_transcript(video_id="3XbtEX3jUv4")
+    with open("strategy.txt", "r", encoding="utf-8") as f:
+        # f.write(youtube_transcript)
+        youtube_transcript = f.read()
 
     # 최근 거래 내역 가져오기
+    print("> Get recent trades result")
     recent_trades = get_recent_trades(mongodb_client=mongodb_client)
-    print("recent_trades : ", recent_trades)
 
     # 현재 시장 데이터 수집 (기존 코드에서 가져온 데이터 사용)
     current_market_data = {
@@ -154,10 +155,10 @@ def ai_trade():
     ####################################################################################################################
     # 2. AI에게 데이터를 제공하고 판단 받기
     ####################################################################################################################
-    print(">> Make AI Decision")
+    print(">> AI Decision >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
     client = OpenAI()
 
-    print(">> Make reflection")
+    print("> Make reflection")
     # 반성 및 개선 내용 생성
     reflection = generate_reflection(
         openai_client=client,
@@ -165,6 +166,7 @@ def ai_trade():
         current_market_data=current_market_data
     )
 
+    print("> Get AI Decision")
     messages = [
         {
             "role": "system",
@@ -253,22 +255,21 @@ def ai_trade():
     ####################################################################################################################
     # 3. AI의 판단에 따라 실제로 자동매매 진행하기
     ####################################################################################################################
-    print(">> Execution trading")
+    print("> Execution trading")
     # Setup upbit client
     upbit_access_key = os.getenv('UPBIT_ACCESS_KEY')
     upbit_secret_key = os.getenv('UPBIT_SECRET_KEY')
     upbit_client = pyupbit.Upbit(upbit_access_key, upbit_secret_key)
 
-    print(f"> AI Decision : {trade_decision.decision.upper()} ###")
-    print(f"> Reason : {trade_decision.reason} ###")
+    print(f"## AI Decision : {trade_decision.decision.upper()} ###")
+    print(f"## Reason : {trade_decision.reason} ###")
 
     if trade_decision.decision.upper() == 'BUY':
         my_krw = upbit_client.get_balance("KRW")
-        # trading_quantity = my_krw * 0.99  # 수수료를 제외한 나머지 금액으로 매수한다.
         trading_quantity = my_krw * (trade_decision.percentage / 100) * 0.99
         if trading_quantity > 5000:  # Upbit 매수 최소 금액 5,000원 확인
-            print(f">> Buy order executed : {trade_decision.percentage}% of available KRW")
-            # print(upbit_client.buy_market_order("KRW-ETH", trading_quantity))
+            print(f"> Buy order executed : {trade_decision.percentage}% of available KRW")
+            print(upbit_client.buy_market_order("KRW-ETH", trading_quantity))
             pass
         else:
             print("[Warning] 매수 최소 금액 미충족 (원화 잔액이 5,000원 이하)")
@@ -278,14 +279,14 @@ def ai_trade():
         trading_quantity = my_eth * (trade_decision.percentage / 100)
         current_price = pyupbit.get_orderbook(ticker="KRW-ETH")['orderbook_units'][0]['ask_price']  # 현재 매도 호가 조회
         if trading_quantity * current_price > 5000:
-            print(f">> Sell order executed : {trade_decision.percentage}% of held ETH")
-            # print(upbit_client.sell_market_order("KRW-ETH", upbit_client.get_balance("KRW-ETH")))
+            print(f"> Sell order executed : {trade_decision.percentage}% of held ETH")
+            print(upbit_client.sell_market_order("KRW-ETH", upbit_client.get_balance("KRW-ETH")))
             pass
         else:
             print("[Warning] 매도 최소 금액 미충족 (5,000원 미만)")
 
     elif trade_decision.decision.upper() == 'HOLD':
-        print(f">> HOLD Position")
+        print(f"> HOLD Position")
 
     # 거래 여부와 상관없이 현재 잔액 조회
     time.sleep(1) # API 호출 제한을 고려하여 잠시 대기
@@ -316,14 +317,15 @@ def ai_trade():
     print("##### [END] AutoTrade #####")
     print("\n\n\n")
 
-def run_trading():
-    while True:
-        try:
-            ai_trade()
-            time.sleep(600) # 10분마다 실행
-        except Exception as ex:
-            logger.error(f"Auto trading error : {ex}")
-            time.sleep(300) # 오류 발생 시 5분 후 재시도
+# def run_trading():
+#     while True:
+#         try:
+#             ai_trade()
+#             time.sleep(600) # 10분마다 실행
+#         except Exception as ex:
+#             logger.error(f"Auto trading error : {ex}")
+#             time.sleep(300) # 오류 발생 시 5분 후 재시도
 
 if __name__ == "__main__":
-    run_trading()
+    # run_trading()
+    ai_trade()
