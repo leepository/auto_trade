@@ -28,10 +28,7 @@ def get_mongodb_client():
         else:
             if None not in (product_db_user, product_db_password, product_db_host, db_port, db_name, db_options):
                 mongodb_dsn = f"mongodb://{product_db_user}:{product_db_password}@{product_db_host}:{db_port}/?{db_options}"
-
-        print("mongodb_dsn : ", mongodb_dsn)
         mongodb_client = MongoClient(mongodb_dsn)
-
     except Exception as ex:
         print("[EX] get_mongodb_client : ", str(ex.args))
 
