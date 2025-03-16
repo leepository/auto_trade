@@ -52,7 +52,7 @@ def calculate_performance(trades_df):
 def generate_reflection(openai_client, trades_df, current_market_data):
     performance = calculate_performance(trades_df)
     response = openai_client.chat.completions.create(
-        model="gpt-4o-2024-08-06",
+        model="gpt-4o",
         messages = [
             {
                 "role": "system",
